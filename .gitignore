@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# Local data (runtime intentions live in Postgres, not in the repo)
+data/
+
+# Caches / build
+embeddings_cache/
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Claude Code local settings
+.claude/
