@@ -42,7 +42,7 @@ export class IntentionManager {
         updated_at: new Date()
       };
 
-      // Generate embedding asynchronously (не блокируем возврат)
+      // Generate embedding asynchronously (don't block the return)
       embedder.embedIntention(intention).catch(error => {
         console.error(`Failed to generate embedding for ${id}:`, error);
       });

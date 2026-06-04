@@ -569,7 +569,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Semantic search handlers
     if (name === 'search_intentions') {
       const context_boost = args.project_filter ? { project: args.project_filter } : {};
-      // Используем гибридный поиск вместо чисто векторного
+      // Use hybrid search instead of pure vector search
       const results = await hybridSearcher.searchHybrid(args.query, {
         limit: args.limit || 5,
         min_energy: args.min_energy || 0.3,

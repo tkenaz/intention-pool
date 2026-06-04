@@ -2,26 +2,26 @@ import { query } from '../database/connection.js';
 import { embedder } from '../embeddings/embedder.js';
 
 /**
- * Semantic Intention Searcher - контекстуальный поиск намерений
+ * Semantic intention searcher — context-aware search over intentions.
  */
 export class IntentionSearcher {
     /**
-     * Семантический поиск намерений по запросу
+     * Semantic search over intentions for a given query.
      */
     async searchByContext(searchQuery, options = {}) {
         const {
             limit = 5,
             min_energy = 0.3,
             include_journey = true,
-            context_boost = {} // {project: 'kenaz', type: 'development'}
+            context_boost = {} // e.g. { project: 'my-project', type: 'development' }
         } = options;
 
-        // Генерируем эмбеддинг запроса
+        // Generate the query embedding
         await embedder.initialize();
         const queryEmbedding = await embedder.embed(searchQuery);
         const vectorString = `[${queryEmbedding.join(',')}]`;
 
-        // Семантический поиск с учётом энергии и контекста
+        // Semantic search weighted by energy and context
         const searchSql = `
             WITH semantic_matches AS (
                 SELECT
@@ -34,7 +34,7 @@ export class IntentionSearcher {
                     i.created_at,
                     i.updated_at,
                     1 - (i.embedding <=> $1::vector) as similarity,
-                    -- Bonus за совпадение контекста
+                    -- Bonus for matching context
                     CASE
                         WHEN $2::jsonb @> i.context THEN 0.2
                         WHEN i.context @> $2::jsonb THEN 0.1
@@ -45,18 +45,18 @@ export class IntentionSearcher {
                     AND i.energy >= $3
                     AND i.embedding IS NOT NULL
                 ORDER BY i.embedding <=> $1::vector
-                LIMIT $4 * 2  -- берём с запасом
+                LIMIT $4 * 2  -- take some headroom
             ),
             scored_matches AS (
                 SELECT
                     *,
-                    -- Комбинированный скор: семантика + контекст + энергия
+                    -- Combined score: semantics + context + energy
                     (similarity + context_bonus) * energy as final_score
                 FROM semantic_matches
             )
             SELECT
                 sm.*,
-                -- Последний прогресс
+                -- Latest progress
                 (SELECT json_build_object(
                     'last_action', p.action,
                     'last_outcome', p.outcome,
@@ -66,7 +66,7 @@ export class IntentionSearcher {
                 WHERE p.intention_id = sm.id
                 ORDER BY p.timestamp DESC
                 LIMIT 1) as last_progress,
-                -- Текущая веха
+                -- Current milestone
                 (SELECT json_build_object(
                     'milestone_id', m.id,
                     'milestone_title', m.title,
@@ -87,7 +87,7 @@ export class IntentionSearcher {
             limit
         ]);
 
-        // Парсим JSON поля
+        // Parse JSON fields
         return result.rows.map(row => ({
             ...row,
             context: typeof row.context === 'string' ? JSON.parse(row.context) : row.context,
@@ -100,7 +100,7 @@ export class IntentionSearcher {
     }
 
     /**
-     * Поиск намерений по проекту
+     * Search intentions by project.
      */
     async searchByProject(project, limit = 5) {
         return await this.searchByContext(project, {
@@ -110,7 +110,7 @@ export class IntentionSearcher {
     }
 
     /**
-     * Поиск намерений по типу
+     * Search intentions by type.
      */
     async searchByType(type, limit = 5) {
         return await this.searchByContext(type, {
@@ -120,7 +120,7 @@ export class IntentionSearcher {
     }
 
     /**
-     * Получить топ намерений с высокой энергией
+     * Get the top intentions by energy.
      */
     async getHighEnergyIntentions(limit = 5) {
         const result = await query(`
@@ -148,7 +148,7 @@ export class IntentionSearcher {
     }
 
     /**
-     * Найти похожие намерения для возможного слияния
+     * Find similar intentions (candidates for merging).
      */
     async findSimilarIntentions(intentionId, threshold = 0.8) {
         const result = await query(`
@@ -174,30 +174,18 @@ export class IntentionSearcher {
     }
 
     /**
-     * Интеллектуальный поиск по истории разговора
+     * Context-aware search over recent conversation history.
      */
     async searchByConversationContext(messages, limit = 3) {
-        // Извлекаем ключевые темы из последних сообщений
+        // Use the most recent messages as the search context
         const recentText = messages
-            .slice(-5) // последние 5 сообщений
+            .slice(-5) // last 5 messages
             .map(m => m.content)
             .join(' ');
 
-        // Добавляем boost для упомянутых проектов
-        const projectMentions = {
-            'kenaz': recentText.toLowerCase().includes('kenaz') ? 'kenaz' : null,
-            'atlas': recentText.toLowerCase().includes('atlas') ? 'Atlas' : null,
-            'tdd': recentText.toLowerCase().includes('tdd') ? 'kenaz-tdd-tool' : null,
-        };
-
-        const activeProject = Object.values(projectMentions).find(p => p);
-
-        return await this.searchByContext(recentText, {
-            limit,
-            context_boost: activeProject ? { project: activeProject } : {}
-        });
+        return await this.searchByContext(recentText, { limit });
     }
 }
 
-// Singleton экземпляр
+// Singleton instance
 export const intentionSearcher = new IntentionSearcher();

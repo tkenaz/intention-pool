@@ -2,16 +2,16 @@ import { query } from '../database/connection.js';
 import { embedder } from '../embeddings/embedder.js';
 
 /**
- * Гибридный поиск - комбинирует векторный и текстовый поиск
- * Решает проблему плохих эмбеддингов для русского языка
+ * Hybrid search — combines vector and keyword search.
+ * Mitigates weak embeddings for non-English (e.g. Russian) queries.
  */
 export class HybridIntentionSearcher {
 
     /**
-     * Извлекает ключевые слова из запроса
+     * Extract keywords from the query.
      */
     extractKeywords(text) {
-        // Удаляем стоп-слова
+        // Remove stop words (English + Russian)
         const stopWords = new Set(['в', 'на', 'и', 'для', 'с', 'по', 'из', 'к', 'от', 'до', 'a', 'the', 'in', 'on', 'for', 'with']);
         const words = text.toLowerCase()
             .split(/\s+/)
@@ -20,7 +20,7 @@ export class HybridIntentionSearcher {
     }
 
     /**
-     * Гибридный поиск с re-ranking
+     * Hybrid search with re-ranking.
      */
     async searchHybrid(searchQuery, options = {}) {
         const {
@@ -29,7 +29,7 @@ export class HybridIntentionSearcher {
             context_boost = {}
         } = options;
 
-        // 1. Векторный поиск (может быть плохим для русского)
+        // 1. Vector search (can be weak for non-English text)
         let vectorResults = [];
         try {
             await embedder.initialize();
@@ -50,19 +50,19 @@ export class HybridIntentionSearcher {
                     AND embedding IS NOT NULL
                 ORDER BY embedding <=> $1::vector
                 LIMIT $3
-            `, [vectorString, min_energy, limit * 3]); // берём больше для re-ranking
+            `, [vectorString, min_energy, limit * 3]); // take more for re-ranking
 
             vectorResults = vectorSearch.rows;
         } catch (error) {
             console.error('Vector search failed:', error);
         }
 
-        // 2. Keyword поиск (fallback для русского)
+        // 2. Keyword search (fallback for non-English text)
         const keywords = this.extractKeywords(searchQuery);
         let keywordResults = [];
 
         if (keywords.length > 0) {
-            // Создаём ILIKE условия для каждого keyword
+            // Build ILIKE conditions for each keyword
             const ilikeConditions = keywords.map((_, i) =>
                 `(content ILIKE $${i + 3} OR context::text ILIKE $${i + 3})`
             ).join(' OR ');
@@ -74,7 +74,7 @@ export class HybridIntentionSearcher {
                     energy,
                     status,
                     context,
-                    -- Считаем сколько keywords совпало
+                    -- Count how many keywords matched
                     (${keywords.map((_, i) =>
                         `CASE WHEN content ILIKE $${i + 3} THEN 1 ELSE 0 END`
                     ).join(' + ')}) as keyword_matches
@@ -93,10 +93,10 @@ export class HybridIntentionSearcher {
             keywordResults = keywordSearch.rows;
         }
 
-        // 3. Объединяем и re-rank результаты
+        // 3. Merge and re-rank results
         const allResults = new Map();
 
-        // Добавляем векторные результаты
+        // Add vector results
         vectorResults.forEach(row => {
             allResults.set(row.id, {
                 ...row,
@@ -106,22 +106,22 @@ export class HybridIntentionSearcher {
             });
         });
 
-        // Добавляем/обновляем keyword результаты
+        // Add/update keyword results
         keywordResults.forEach(row => {
             if (allResults.has(row.id)) {
                 const existing = allResults.get(row.id);
                 existing.keyword_score = (row.keyword_matches || 0) / Math.max(keywords.length, 1);
-                // Гибридный скор: если keywords совпали, даём больше веса
-                // Для русского языка keywords важнее!
+                // Hybrid score: weight keywords higher when they match
+                // (keywords matter more for non-English queries)
                 existing.hybrid_score = existing.vector_score * 0.2 + existing.keyword_score * 0.8;
             } else {
-                // Если найдено только через keywords - даём высокий скор
+                // Found only via keywords — give it a high score
                 const keyScore = (row.keyword_matches || 0) / Math.max(keywords.length, 1);
                 allResults.set(row.id, {
                     ...row,
                     vector_score: 0,
                     keyword_score: keyScore,
-                    hybrid_score: keyScore * 1.2  // Boost для keyword-only matches
+                    hybrid_score: keyScore * 1.2  // boost for keyword-only matches
                 });
             }
         });
@@ -132,7 +132,7 @@ export class HybridIntentionSearcher {
                 const ctx = typeof result.context === 'string' ?
                     JSON.parse(result.context) : result.context;
 
-                // Если контекст совпадает, увеличиваем скор
+                // If the context matches, increase the score
                 for (const [key, value] of Object.entries(context_boost)) {
                     if (ctx && ctx[key] === value) {
                         result.hybrid_score += 0.2;
@@ -141,12 +141,12 @@ export class HybridIntentionSearcher {
             });
         }
 
-        // 5. Сортируем по гибридному скору и возвращаем топ N
+        // 5. Sort by hybrid score and return the top N
         const sortedResults = Array.from(allResults.values())
             .sort((a, b) => b.hybrid_score - a.hybrid_score)
             .slice(0, limit);
 
-        // Форматируем результаты
+        // Format results
         return sortedResults.map(row => ({
             ...row,
             context: typeof row.context === 'string' ? JSON.parse(row.context) : row.context,
@@ -159,10 +159,10 @@ export class HybridIntentionSearcher {
     }
 
     /**
-     * Специальный поиск для русского языка
+     * Specialized search for non-English queries.
      */
     async searchRussian(searchQuery, options = {}) {
-        // Для русского языка даём больше веса keyword matching
+        // For non-English queries, weight keyword matching higher
         return this.searchHybrid(searchQuery, {
             ...options,
             keyword_weight: 0.8,  // 80% keywords, 20% vectors
@@ -171,7 +171,7 @@ export class HybridIntentionSearcher {
     }
 
     /**
-     * Прямой поиск по точному совпадению
+     * Direct exact-match search.
      */
     async searchExact(searchTerms, options = {}) {
         const {

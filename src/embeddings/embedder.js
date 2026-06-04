@@ -2,8 +2,8 @@ import { pipeline } from '@xenova/transformers';
 import { query } from '../database/connection.js';
 
 /**
- * Intention Embedder - генерирует векторные представления намерений
- * Использует all-MiniLM-L6-v2 - компактную модель с 384 dimensions
+ * Intention embedder — produces vector representations of intentions.
+ * Uses all-MiniLM-L6-v2, a compact 384-dimension model.
  */
 export class IntentionEmbedder {
     constructor() {
@@ -37,7 +37,7 @@ export class IntentionEmbedder {
     }
 
     /**
-     * Генерирует эмбеддинг для текста
+     * Generate an embedding for a text string.
      */
     async embed(text) {
         await this.initialize();
@@ -51,12 +51,12 @@ export class IntentionEmbedder {
     }
 
     /**
-     * Создаёт поисковый текст из намерения
+     * Build the search text for an intention.
      */
     buildSearchText(intention) {
         const parts = [intention.content];
 
-        // Добавляем важные поля из контекста
+        // Add important fields from the context
         if (intention.context) {
             if (intention.context.project) {
                 parts.push(`project: ${intention.context.project}`);
@@ -76,13 +76,13 @@ export class IntentionEmbedder {
     }
 
     /**
-     * Генерирует и сохраняет эмбеддинг для намерения
+     * Generate and persist the embedding for an intention.
      */
     async embedIntention(intention) {
         const searchText = this.buildSearchText(intention);
         const embedding = await this.embed(searchText);
 
-        // Сохраняем в БД
+        // Persist to the database
         await query(
             'UPDATE intentions SET embedding = $1 WHERE id = $2',
             [`[${embedding.join(',')}]`, intention.id]
@@ -92,7 +92,7 @@ export class IntentionEmbedder {
     }
 
     /**
-     * Генерирует эмбеддинги для всех намерений без них
+     * Generate embeddings for all intentions that are missing one.
      */
     async embedAllMissing() {
         const missingEmbeddings = await query(
@@ -104,7 +104,7 @@ export class IntentionEmbedder {
         let processed = 0;
         for (const intention of missingEmbeddings.rows) {
             try {
-                // Парсим context если он строка
+                // Parse context if it is a string
                 if (typeof intention.context === 'string') {
                     intention.context = JSON.parse(intention.context);
                 }
@@ -125,5 +125,5 @@ export class IntentionEmbedder {
     }
 }
 
-// Singleton экземпляр
+// Singleton instance
 export const embedder = new IntentionEmbedder();

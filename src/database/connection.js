@@ -12,7 +12,7 @@ const { Pool } = pg;
 export const pool = new Pool({
   host: process.env.PG_HOST || 'localhost',
   port: process.env.PG_PORT || 5432,
-  database: process.env.PG_DB || 'claude',
+  database: process.env.PG_DB || 'intention_pool',
   user: process.env.PG_USER || 'postgres',
   password: process.env.PG_PASSWORD,
   max: 10,

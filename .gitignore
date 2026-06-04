@@ -20,3 +20,16 @@ embeddings_cache/
 
 # Claude Code local settings
 .claude/
+
+# Local-only working notes, scratch scripts and tests (never publish)
+my-decision.md
+NEXT_STEPS.txt
+SEMANTIC_SEARCH_DESIGN.md
+CLAUDE_INTEGRATION.md
+generate-embeddings.js
+init-db.js
+migrate-all.js
+fix-triggers.sql
+test-*.js
+src/index-old.js
+src/index-new.js
