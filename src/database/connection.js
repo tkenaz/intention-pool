@@ -2,11 +2,24 @@ import pg from 'pg';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Load .env from the repo root regardless of the cwd the MCP host spawned us from.
+// Values already present in the environment (e.g. from the host config) take precedence.
+dotenv.config({ path: path.join(__dirname, '../../.env') });
+
 const { Pool } = pg;
+
+const sanitizeActor = (value, fallback) => {
+  const normalized = String(value || fallback).trim();
+  return /^[A-Za-z0-9_.-]+$/.test(normalized) ? normalized : fallback;
+};
+
+const actorModel = sanitizeActor(process.env.ACTOR_MODEL, 'unknown');
+const actorClient = sanitizeActor(process.env.ACTOR_CLIENT, 'unknown');
 
 // Create connection pool
 export const pool = new Pool({
@@ -15,6 +28,9 @@ export const pool = new Pool({
   database: process.env.PG_DB || 'intention_pool',
   user: process.env.PG_USER || 'postgres',
   password: process.env.PG_PASSWORD,
+  // PostgreSQL custom settings are visible to the audit trigger on every
+  // connection and cannot be spoofed through MCP tool arguments.
+  options: `-c app.actor_model=${actorModel} -c app.actor_client=${actorClient}`,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
@@ -34,6 +50,14 @@ pool.on('error', (err) => {
  */
 export async function initializeDatabase() {
   try {
+    // AUTO_MIGRATE=false -> running as a least-privilege runtime role with no DDL
+    // rights; skip schema application. An owner role applies migrations separately.
+    if (process.env.AUTO_MIGRATE === 'false') {
+      await pool.query('SELECT 1');
+      console.error('AUTO_MIGRATE=false — skipping schema DDL (runtime role)');
+      return true;
+    }
+
     // Read schema file
     const schemaPath = path.join(__dirname, 'schema.sql');
     const schema = await fs.readFile(schemaPath, 'utf-8');
@@ -171,6 +195,19 @@ export async function query(text, params) {
     console.error('Query error:', error);
     throw error;
   }
+}
+
+export async function getIntentionAudit(intentionId, limit = 50) {
+  const result = await query(
+    `SELECT id, entity_type, entity_id, operation, actor_model, actor_client,
+            changed_at, old_data, new_data
+       FROM intention_audit_log
+      WHERE intention_id = $1
+      ORDER BY changed_at DESC, id DESC
+      LIMIT $2`,
+    [intentionId, limit]
+  );
+  return result.rows;
 }
 
 /**

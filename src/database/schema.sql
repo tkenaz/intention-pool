@@ -135,6 +135,25 @@ CREATE TABLE IF NOT EXISTS blockers (
     resolution TEXT
 );
 
+-- Immutable provenance for changes made through different MCP clients/models.
+-- Actor identity comes from server-side PostgreSQL settings, not tool input.
+CREATE TABLE IF NOT EXISTS intention_audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    intention_id VARCHAR(50),
+    entity_type TEXT NOT NULL,
+    entity_id TEXT,
+    operation VARCHAR(10) NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
+    actor_model TEXT NOT NULL,
+    actor_client TEXT NOT NULL,
+    old_data JSONB,
+    new_data JSONB,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Append-only: history is never edited or deleted (superuser bypasses, by design).
+-- Runtime roles get SELECT only; the SECURITY DEFINER trigger performs all writes.
+REVOKE UPDATE, DELETE ON intention_audit_log FROM PUBLIC;
+
 -- Blocker-milestone relationships
 CREATE TABLE IF NOT EXISTS blocker_milestones (
     blocker_id VARCHAR(50) REFERENCES blockers(id) ON DELETE CASCADE,
@@ -156,6 +175,65 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_intention ON artifacts(intention_id);
 CREATE INDEX IF NOT EXISTS idx_insights_intention ON insights(intention_id);
 CREATE INDEX IF NOT EXISTS idx_blockers_intention ON blockers(intention_id);
 CREATE INDEX IF NOT EXISTS idx_blockers_severity ON blockers(severity);
+CREATE INDEX IF NOT EXISTS idx_intention_audit_intention_time
+    ON intention_audit_log(intention_id, changed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_intention_audit_actor
+    ON intention_audit_log(actor_model, actor_client, changed_at DESC);
+
+CREATE OR REPLACE FUNCTION audit_intention_change()
+RETURNS TRIGGER AS $$
+DECLARE
+    old_row JSONB;
+    new_row JSONB;
+    effective_row JSONB;
+    effective_intention_id TEXT;
+    effective_entity_id TEXT;
+BEGIN
+    old_row := CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN to_jsonb(OLD) ELSE NULL END;
+    new_row := CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN to_jsonb(NEW) ELSE NULL END;
+    effective_row := COALESCE(new_row, old_row);
+    effective_intention_id := CASE
+        WHEN TG_TABLE_NAME = 'intentions' THEN effective_row->>'id'
+        ELSE effective_row->>'intention_id'
+    END;
+    effective_entity_id := COALESCE(effective_row->>'id', effective_row->>'intention_id');
+
+    INSERT INTO intention_audit_log (
+        intention_id, entity_type, entity_id, operation,
+        actor_model, actor_client, old_data, new_data
+    ) VALUES (
+        effective_intention_id,
+        TG_TABLE_NAME,
+        effective_entity_id,
+        TG_OP,
+        COALESCE(NULLIF(current_setting('app.actor_model', true), ''), 'unknown'),
+        COALESCE(NULLIF(current_setting('app.actor_client', true), ''), 'unknown'),
+        old_row,
+        new_row
+    );
+
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DO $$
+DECLARE
+    audited_table TEXT;
+BEGIN
+    FOREACH audited_table IN ARRAY ARRAY[
+        'intentions', 'intention_evolution', 'journeys', 'milestones',
+        'progress_log', 'next_steps', 'artifacts', 'insights', 'blockers'
+    ]
+    LOOP
+        EXECUTE format('DROP TRIGGER IF EXISTS audit_changes ON %I', audited_table);
+        EXECUTE format(
+            'CREATE TRIGGER audit_changes AFTER INSERT OR UPDATE OR DELETE ON %I '
+            'FOR EACH ROW EXECUTE FUNCTION audit_intention_change()',
+            audited_table
+        );
+    END LOOP;
+END;
+$$;
 
 -- Update trigger for intentions
 CREATE OR REPLACE FUNCTION update_updated_at_column()

@@ -11,7 +11,7 @@ import { JourneyManager } from './core/journey-manager.js';
 import { IntentionSearcher } from './core/intention-searcher.js';
 import { HybridIntentionSearcher } from './core/hybrid-searcher.js';
 import { embedder } from './embeddings/embedder.js';
-import { initializeDatabase, closeDatabase } from './database/connection.js';
+import { initializeDatabase, closeDatabase, getIntentionAudit } from './database/connection.js';
 
 const server = new Server(
   {
@@ -291,6 +291,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['intention_id'],
         },
       },
+      {
+        name: 'get_intention_audit',
+        description: 'Get the immutable model/client provenance history for an intention',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            intention_id: { type: 'string', description: 'Intention ID' },
+            limit: { type: 'number', minimum: 1, maximum: 200, default: 50 },
+          },
+          required: ['intention_id'],
+        },
+      },
       // Semantic search tools
       {
         name: 'search_intentions',
@@ -562,6 +574,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{
           type: 'text',
           text: JSON.stringify({ success: true, stats }, null, 2),
+        }],
+      };
+    }
+
+    if (name === 'get_intention_audit') {
+      const limit = Math.min(200, Math.max(1, args.limit || 50));
+      const events = await getIntentionAudit(args.intention_id, limit);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            intention_id: args.intention_id,
+            count: events.length,
+            events,
+          }, null, 2),
         }],
       };
     }
