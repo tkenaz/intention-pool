@@ -1,18 +1,22 @@
 {
   "name": "intention-pool",
   "version": "0.2.0",
-  "description": "Intention management system for Claude - tracking desires, plans, and evolving intentions",
+  "description": "MCP server for tracking intentions: evolving goals with energy, journeys and an append-only provenance audit log",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
     "claude",
     "intentions",
-    "autonomy"
+    "agent-memory",
+    "pgvector",
+    "audit-log"
   ],
   "author": "Maryna Vyshnyvetska",
   "license": "MIT",

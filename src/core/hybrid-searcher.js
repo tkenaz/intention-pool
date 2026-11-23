@@ -1,6 +1,20 @@
 import { query } from '../database/connection.js';
 import { embedder } from '../embeddings/embedder.js';
 
+// Keyword evidence is weighted above vector similarity on purpose: the embedding
+// model is small and English-centric, so substring matches are the more reliable
+// signal for non-English queries.
+export const VECTOR_WEIGHT = 0.2;
+export const KEYWORD_WEIGHT = 0.8;
+
+/**
+ * Combine the two signals on one scale. A retriever that did not return the row
+ * contributes 0, so extra evidence can only raise a score, never lower it.
+ */
+export function combineScores(vectorScore = 0, keywordScore = 0) {
+    return VECTOR_WEIGHT * vectorScore + KEYWORD_WEIGHT * keywordScore;
+}
+
 /**
  * Hybrid search — combines vector and keyword search.
  * Mitigates weak embeddings for non-English (e.g. Russian) queries.
@@ -76,7 +90,7 @@ export class HybridIntentionSearcher {
                     context,
                     -- Count how many keywords matched
                     (${keywords.map((_, i) =>
-                        `CASE WHEN content ILIKE $${i + 3} THEN 1 ELSE 0 END`
+                        `CASE WHEN content ILIKE $${i + 3} OR context::text ILIKE $${i + 3} THEN 1 ELSE 0 END`
                     ).join(' + ')}) as keyword_matches
                 FROM intentions
                 WHERE status = 'active'
@@ -102,7 +116,7 @@ export class HybridIntentionSearcher {
                 ...row,
                 vector_score: row.vector_score || 0,
                 keyword_score: 0,
-                hybrid_score: row.vector_score || 0
+                hybrid_score: combineScores(row.vector_score || 0, 0)
             });
         });
 
@@ -111,17 +125,15 @@ export class HybridIntentionSearcher {
             if (allResults.has(row.id)) {
                 const existing = allResults.get(row.id);
                 existing.keyword_score = (row.keyword_matches || 0) / Math.max(keywords.length, 1);
-                // Hybrid score: weight keywords higher when they match
-                // (keywords matter more for non-English queries)
-                existing.hybrid_score = existing.vector_score * 0.2 + existing.keyword_score * 0.8;
+                existing.hybrid_score = combineScores(existing.vector_score, existing.keyword_score);
             } else {
-                // Found only via keywords — give it a high score
+                // Found only via keywords
                 const keyScore = (row.keyword_matches || 0) / Math.max(keywords.length, 1);
                 allResults.set(row.id, {
                     ...row,
                     vector_score: 0,
                     keyword_score: keyScore,
-                    hybrid_score: keyScore * 1.2  // boost for keyword-only matches
+                    hybrid_score: combineScores(0, keyScore)
                 });
             }
         });
@@ -159,15 +171,11 @@ export class HybridIntentionSearcher {
     }
 
     /**
-     * Specialized search for non-English queries.
+     * Kept for backward compatibility: searchHybrid already weights keywords
+     * above vectors for every query.
      */
     async searchRussian(searchQuery, options = {}) {
-        // For non-English queries, weight keyword matching higher
-        return this.searchHybrid(searchQuery, {
-            ...options,
-            keyword_weight: 0.8,  // 80% keywords, 20% vectors
-            vector_weight: 0.2
-        });
+        return this.searchHybrid(searchQuery, options);
     }
 
     /**

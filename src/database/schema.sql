@@ -1,6 +1,12 @@
 -- Schema for Intention Pool with Journey support
 -- This extends intentions to support continuous development paths
 
+-- pgvector powers semantic search. Installing an extension needs a role that is
+-- allowed to do so (database owner on PostgreSQL 13+ for trusted extensions,
+-- otherwise superuser); a least-privilege runtime role should run with
+-- AUTO_MIGRATE=false and never reach this file.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- Main intentions table (existing structure preserved)
 CREATE TABLE IF NOT EXISTS intentions (
     id VARCHAR(50) PRIMARY KEY,
@@ -150,9 +156,40 @@ CREATE TABLE IF NOT EXISTS intention_audit_log (
     changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Append-only: history is never edited or deleted (superuser bypasses, by design).
--- Runtime roles get SELECT only; the SECURITY DEFINER trigger performs all writes.
-REVOKE UPDATE, DELETE ON intention_audit_log FROM PUBLIC;
+-- Append-only, enforced by triggers rather than by grant convention: even a role
+-- that was granted ALL on this table cannot rewrite history or forge entries.
+--   * UPDATE / DELETE / TRUNCATE are rejected outright.
+--   * INSERT is accepted only from inside another trigger (the audit trigger
+--     below), never as a direct statement.
+-- The table owner or a superuser can still drop these triggers; that is the
+-- administrative boundary, and doing so is itself visible in the schema.
+CREATE OR REPLACE FUNCTION intention_audit_log_guard()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF pg_trigger_depth() < 2 THEN
+            RAISE EXCEPTION 'intention_audit_log is written only by the audit trigger'
+                USING ERRCODE = 'insufficient_privilege';
+        END IF;
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'intention_audit_log is append-only (% rejected)', TG_OP
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS audit_log_guard_rows ON intention_audit_log;
+CREATE TRIGGER audit_log_guard_rows
+    BEFORE INSERT OR UPDATE OR DELETE ON intention_audit_log
+    FOR EACH ROW EXECUTE FUNCTION intention_audit_log_guard();
+
+DROP TRIGGER IF EXISTS audit_log_guard_truncate ON intention_audit_log;
+CREATE TRIGGER audit_log_guard_truncate
+    BEFORE TRUNCATE ON intention_audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION intention_audit_log_guard();
+
+-- Defence in depth; PUBLIC has no table privileges by default anyway.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON intention_audit_log FROM PUBLIC;
 
 -- Blocker-milestone relationships
 CREATE TABLE IF NOT EXISTS blocker_milestones (
@@ -161,7 +198,13 @@ CREATE TABLE IF NOT EXISTS blocker_milestones (
     PRIMARY KEY (blocker_id, milestone_id)
 );
 
+-- Semantic search: 384-dim embedding (all-MiniLM-L6-v2), filled in by the server
+-- after an intention is created. NULL until then; search skips NULL rows.
+ALTER TABLE intentions ADD COLUMN IF NOT EXISTS embedding vector(384);
+
 -- INDEXES for performance
+CREATE INDEX IF NOT EXISTS idx_intentions_embedding
+    ON intentions USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_intentions_status ON intentions(status);
 CREATE INDEX IF NOT EXISTS idx_intentions_energy ON intentions(energy);
 CREATE INDEX IF NOT EXISTS idx_intentions_parent ON intentions(parent_id);
